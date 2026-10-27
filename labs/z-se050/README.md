@@ -46,6 +46,7 @@ from the raw MAC down to the 6-digit code, which needs no secret at all. Thus, a
 who tries to read your memory or SD card will never see the secret key, and cannot generate codes.
 
 ## Prep
+
 Since all of the SE050 boards are soldered by hand, there may be some bad boards despite our best efforts.
 Please run the staff binary provided to check if the board is working before proceeding.
 
@@ -170,6 +171,10 @@ Specifically, the commands we will need are (references to AN12413):
 - 4.13.4 MACOneShot (pp. 90), use `HMAC_SHA1` as the MACAlgo.
 - 4.7.4.5 DeleteSecureObject (pp. 70)
 
+Note: the SE050 manual does suggest a soft reset after powering on, but we will have to implement support for S-blocks (as all of
+these commands are I-blocks) for that, which is a bit more complicated than the intended difficulty of this lab. Can do it as
+a minor extension (for both S and R blocks), but a proper implementation should have those as mandatory.
+
 ### Command basics
 
 Taking 4.4 Applet selection (pp. 47) as an example.
@@ -261,8 +266,23 @@ code = ((mac[offset] & 0x7f) << 24 |
 For more details, check [RFC6238](https://www.rfc-editor.org/rfc/rfc6238.html) and
 [Wikipedia](https://en.wikipedia.org/wiki/Time-based_One-time_Password_algorithm).
 
-## Checking your results
+## Testing and check off
 
 Feel free to grab a few test vectors from [RFC6238 Appendix B](https://datatracker.ietf.org/doc/html/rfc6238/#appendix-B)
 to check your implementation. The test vectors we included is for key `12345678901234567890` and time `1111111109`, and code
 should be `081804` (or `07081804` for the 8-digit version).
+
+When ready to check off, please run 3 test vectors from `RFC6238 Appendix B`, and show our staff that your chip is generating
+the expected codes.
+
+## Extensions
+
+Many extensions are possible, given the rich feature set of the SE050. Some ideas:
+
+- Implement S-blocks and R-blocks, and implement the soft reset command after powering on the chip.
+- Get more crypto going, such as AES, RSA, ECDSA, etc. and implement a more complete crypto library.
+- Use the optional TLV fields to set policies for the key, such as max attempts, or use RFC3394 to wrap the key.
+- This chip enables true, CC EAL6+ certified randomness! Never have to worry about the lack of entropy on the Pi (tho Pi has a undocumented hardware RNG,
+  but we don't know about the design of it). Build a demo to show the attack surfaces of software PRNG and see how this TRNG can help.
+- TLS helper! if you already have TCP going on the Pi, leverage the TLS helpers provided by this chip for an upgrade!
+- Ethereum lab. Personal recreation but kinda cool to generate and sign Ethereum transactions on the Pi with actual hardware security.
