@@ -48,7 +48,7 @@ who tries to read your memory or SD card will never see the secret key, and cann
 ## Prep
 
 Since all of the SE050 boards are soldered by hand, there may be some bad boards despite our best efforts.
-Please run the staff binary provided to check if the board is working before proceeding.
+Please run the [staff binary](https://sites.tianleyu.com/~unics/cs140e/se050.bin) provided to check if the board is working before proceeding.
 
 ## Talking to the chip
 
@@ -86,9 +86,17 @@ NAD | PCB | LEN | INF   | CRC  <- fields
   (Table 4, pp. 5, UM11225).
 - PCB is the protocol control byte that indicates the type of the frame (I-block, R-block, S-block),
   and the sequence number of the frame (Table 5/6, pp. 6, UM11225). For this lab, we will not use chaining
-  for I-blocks, so the M bit should always be 0. The N(S) and N(R) bits are the sequence numbers for I-blocks
-  and R-blocks, which should be toggled between 0 and 1 for each new block sent. We will leave S-blocks for later
-  since it is a bit more complicated.
+  for I-blocks, so the M bit (`0x20`) should always be 0.
+  - **N(S)** (bit 7, `0x40`, I-blocks only) is the *send* sequence number. The Pi and the SE050 each keep
+    their **own** N(S): each starts at 0 and flips every time that side sends a *new* I-block. A retransmitted
+    block reuses its old N(S). Since every command in this lab gets exactly one reply, the Pi's blocks go
+    `0x00, 0x40, 0x00, ...` and the chip's replies follow the same pattern, but they are still two separate counters.
+  - **N(R)** (bit 5, `0x10`, R-blocks only, `PCB = 0x80 | ...`) is *not* a counter: it is "the N(S) I expect
+    to receive next". R-blocks are used to ask the other side to resend after an error (e.g., bad CRC), or to
+    acknowledge a chained block, and sending one does not advance either side's N(S).
+
+  For the main lab you only need to track (and toggle) the Pi's N(S); R-blocks and S-blocks are left for the
+  extensions since they are a bit more complicated.
 - LEN is the length of the INF field, which can be 0-254 bytes (note `0xff` is an indicator of extended length,
   which we will not use in this lab).
 - INF is the information field, which contains the data of `LEN` bytes.
@@ -131,14 +139,14 @@ CLA | INS | P1 | P2 | Lc | Data | Le   <- fields
 - `Lc` is the length of the Data field, which can be 1-255 bytes. If length of data is 0, Lc is omitted. Per ISO7816-4,
   Lc can be extended to 3 bytes, but we will not use that in this lab.
 - Data is the boring body.
-- `Le` is the length of the expected response data, which can be 0-255 bytes. If length of expected response is 0,
-  Le is omitted. Per ISO7816-4, Le can be extended to 3 bytes, but we will not use that in this lab.
+- `Le` Le is the maximum response length expected. 0x00 means up to 256 bytes. Omit Le if you expect no response data.
+  Per ISO7816-4, Le can be extended to 3 bytes, but we will not use that in this lab.
   Per AN12413, Le is not explicitly checked, but should always be smaller than `0x8000` (pp. 32).
 
 Note: this APDU structure is only used for sending messages to the chip, and the format of responses from the chip can be
 different per command. Make sure to look for `R-APDU Body` in the command's description in AN12413 for details. Many commands
-also carry a status word (SE), which is a 2-byte code indicating the result of the command, indicated in the `R-APDU Trailer`
-table of the command. It is safe to ignore it for this lab, but the best practice is to always check it.
+also carry a status word (SW), which is a 2-byte code indicating the result of the command, indicated in the `R-APDU Trailer`
+table of the command.
 
 ### TLV
 
@@ -153,11 +161,11 @@ Tag | Length | Value    <- fields
 ```
 
 - Tag is a 1-byte identifier for the type of data, check `4.3.9 TLV tags` in AN12413 (pp. 39) for the list of tags.
-- Length is the length of the Value field, which can be 1-127 bytes. For longer data, the length can be extended to 2 or 3 bytes.
+- Length is the length of the Value field, which can be 0-127 bytes. For longer data, the length can be extended to 2 or 3 bytes.
   This is **important** since sometimes the data sent back by the chip can be using the extended format despite it is actually small.
   - For Length <= 127, the only byte encodes it.
-  - For Length <= 255, the first length byte is `0x81`, and the second byte encodes the length.
-  - For Length <= 65535, the first length byte is `0x82`, the second and third bytes encode the length in **big-endian** format.
+  - For Length 128-255, the first length byte is `0x81`, and the second byte encodes the length.
+  - For Length 256-65535, the first length byte is `0x82`, the second and third bytes encode the length in **big-endian** format.
 - Value is the actual data, which is `Length` bytes long.
 
 ## Build!
@@ -171,9 +179,12 @@ Specifically, the commands we will need are (references to AN12413):
 - 4.13.4 MACOneShot (pp. 90), use `HMAC_SHA1` as the MACAlgo.
 - 4.7.4.5 DeleteSecureObject (pp. 70)
 
-Note: the SE050 manual does suggest a soft reset after powering on, but we will have to implement support for S-blocks (as all of
-these commands are I-blocks) for that, which is a bit more complicated than the intended difficulty of this lab. Can do it as
-a minor extension (for both S and R blocks), but a proper implementation should have those as mandatory.
+Note: AN12413 recommends a soft reset (an S-block) after power-on. We skip S-blocks to keep the lab small, which is fine for this lab,
+but a production driver should implement them (and R-blocks). Feel free to do it as an extension.
+
+Tip: since we skip the soft reset, the chip keeps its T=1 state (e.g., its N(S)) across Pi reboots, because rebooting the Pi does not
+power-cycle the SE050. If things work on the first run but act weird on the next one, **power-cycle the chip between runs** (unplug and
+replug the Pi, or the SE050 board's power).
 
 ### Command basics
 
@@ -202,8 +213,8 @@ NAD | PCB | LEN | INF    | CRC
 So that ^ goes on to the I2C bus, and we should get back a response like this:
 
 ```
-NAD | PCB | LEN | INF | CRC
-0xa5| 0x00| 0x09| ver | Some CRC
+NAD | PCB | LEN | INF           | CRC
+0xa5| 0x00| 0x09| ver 0x90 0x00 | Some CRC
 ```
 
 where `ver` is the version of the applet, likely `0x07 0x02 0x00 ...` which indicates version 7.2.0 applet version.
@@ -243,7 +254,7 @@ CLA | INS | P1  | P2  | Lc  | TLV[TAG_1]   | TLV[TAG_3]    | Le
 ```
 
 and the T=1 frame is wrapping the APDU command with NAD = 0x5a, PCB = 0x00/0x40 (depending on the order you send stuff), ...
-To help you cross check, the CRC of this command is `0x51 0x33`.
+To help you cross check, the CRC of this command is `0x51 0x33` (assuming this is the second command you send and PCB = 0x40).
 
 ### TOTP!
 
@@ -286,3 +297,7 @@ Many extensions are possible, given the rich feature set of the SE050. Some idea
   but we don't know about the design of it). Build a demo to show the attack surfaces of software PRNG and see how this TRNG can help.
 - TLS helper! if you already have TCP going on the Pi, leverage the TLS helpers provided by this chip for an upgrade!
 - Ethereum lab. Personal recreation but kinda cool to generate and sign Ethereum transactions on the Pi with actual hardware security.
+
+## Disclosure on AI Usage
+
+This document was handwritten, and improved with suggestions from Claude. Some of the test code are generated with the assistance of Claude.
